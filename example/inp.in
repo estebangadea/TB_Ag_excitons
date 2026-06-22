@@ -1,0 +1,36 @@
+# ELECTRONIC SYSTEM 
+chains      =  1          #number of chains: 1 or 2
+nchain1     =  64        #number of pairs in chain 1
+nchain2     =  1          #number of pairs in chain 2
+hop         = -0.668653   #-0.64025  #hopping integral 1 in eV
+req         =  2.6048156  #equilibrium distance between closest atoms (hopping integral 1) in amstrongs
+lattice     =  6.0        #cell dimension
+dimer1      =  0.0868     #dimerization 
+rchain      =  3.0        #interchain distance in AA
+fxcalpha    =  -0.1       #strenght of the fxc interaction in eV
+fxcgamma    =  0.26       #radius for long-range correction in amstrongs
+hartreeu    =  0.0        #3.13725    #strength of the Hartree term (U)
+p           =  15         #exponent of repulsion potential
+pref        =  0.231122    #prefactor for repulsion
+
+
+# NUCLEAR SYSTEM
+ehrenfest   = 1
+atmass      =  198046   #mass of the atoms 
+damp        =  0        #damp flag: 0-no damp, 1-velocity damp
+dampforce   =  5.0      #damp constant
+
+# TIME PROPAGATION
+time        =  2.0       #total time in femtoseconds (100 steps, short example run)
+tstep       =  0.001    #timestep in femtoseconds
+savefreq    =  10       #frequency of data save (default 100 steps)
+bufflen     =  5       #size of the data buffer (default 100 steps)
+restart     =  0
+propflag    =  1
+
+
+# VECTOR POTENTIAL
+vpot        =  1         #vector potential type: 0-None 1-step 2-pulse 3-laser pulse
+vamp        =  1.0     #amplitud of the vector potential eV/A
+vtime       =  1.0      #time of the aplication in femtoseconds
+vfreq       =  1.254     #frequency of the laser (only if vpot = 3) in eV

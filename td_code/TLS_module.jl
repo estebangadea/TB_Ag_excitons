@@ -1,5 +1,4 @@
 using SparseArrays
-using DelimitedFiles
 include("IOmodule.jl")
 
 ###Constants###
@@ -182,15 +181,25 @@ function buildxc(rion::Array{Float64,1}, boxl::Float64, alpha::Number, gamma::Nu
     # Hartree term: 1/sqrt(d^2 + 1/U^2), strength fixed (K=1), softened so its on-site (d=0) value is exactly U.
     # fxc term:     alpha/sqrt(d^2 + gamma^2). Both run over ALL site pairs, including the on-site (d=0) self term,
     # matching report eqs 6-7 (no separate on-site/off-site cases).
+    # array is symmetric and array2 antisymmetric in (ii,jj) (dij flips sign, dij^2 doesn't), so only the
+    # ii<=jj triangle is computed and mirrored -- halves the O(size^2) cost of this hot per-step routine.
     array = zeros(ComplexF64, size, size)
     array2 = zeros(ComplexF64, size, size)
     Usqd = U^2
     gammasqd = gamma^2
-    for ii = 1:size
-        for jj = 1:size
+    @inbounds for jj = 1:size
+        for ii = 1:jj
             dij = (rion[jj]-rion[ii]) - ((rion[jj]-rion[ii]) ÷ (boxl/2)) * boxl
-            array[ii,jj]  = 1 / sqrt(dij^2 + 1/Usqd) + alpha / sqrt(dij^2 + gammasqd)
-            array2[ii,jj] = -dij / (dij^2 + 1/Usqd)^1.5 - alpha * dij / (dij^2 + gammasqd)^1.5
+            s1 = dij^2 + 1/Usqd
+            s2 = dij^2 + gammasqd
+            sq1 = sqrt(s1)
+            sq2 = sqrt(s2)
+            a  = 1/sq1 + alpha/sq2
+            a2 = -dij/(s1*sq1) - alpha*dij/(s2*sq2)
+            array[ii,jj] = a
+            array[jj,ii] = a
+            array2[ii,jj] = a2
+            array2[jj,ii] = -a2
         end
     end
     return array, array2
@@ -205,11 +214,13 @@ function buildintchain(rion1::Array{Float64,1}, rion2::Array{Float64,1}, boxl::F
     array = zeros(Float64, size1, size2)
     array2 = zeros(Float64, size1, size2)
 
-    for ii = 1:size1
-        for jj = 1:size2
+    @inbounds for jj = 1:size2
+        for ii = 1:size1
             dij = (rion1[ii]-rion2[jj]) - ((rion1[ii]-rion2[jj]) ÷ (boxl/2)) * boxl
-            array[ii,jj] = 1/sqrt(dij^2 + ysqd)
-            array2[ii,jj] = -1.0 * dij /(dij^2 + ysqd)^1.5
+            s = dij^2 + ysqd
+            sq = sqrt(s)
+            array[ii,jj] = 1/sq
+            array2[ii,jj] = -dij/(s*sq)
         end
     end
     return array, array2
@@ -309,7 +320,9 @@ end
 function propagate(rhoi::Array{Complex{Float64},2}, gspop::Array{Complex{Float64},1},
     focki::SparseMatrixCSC{Complex{Float64}}, fockaob::SparseMatrixCSC{Complex{Float64}},
     rion::Array{Float64,1}, vion::Array{Float64,1}, fion::Array{Float64,1},
-    boxl::Float64, pottable::Array{Float64,2}, input::Input, ii::Int64)
+    boxl::Float64, pottable::Array{Float64,2}, input::Input, ii::Int64;
+    xc_cache = nothing) # when ehrenfest=0, rion never changes, so the caller can pass a
+    # precomputed (lrcxco, dlrxco) here instead of paying buildxc's O(size^2) cost on every step
 
     construct_rdep_hamiltonian(focki, fockaob, rion, boxl, pottable, input, 2*input.nchain1) # Construct H based on position
 
@@ -339,7 +352,7 @@ function propagate(rhoi::Array{Complex{Float64},2}, gspop::Array{Complex{Float64
     end
 
     if input.fxcalpha^2 + input.hartreeu^2 > 1e-9
-        lrcxco, dlrxco = buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1)
+        lrcxco, dlrxco = xc_cache === nothing ? buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1) : xc_cache
         Hxc(focki, rhoi, gspop, 2*input.nchain1, lrcxco)
         if input.ehrenfest == 1
             velverlet(rion, fion, vion, input, boxl, pottable, rhoi, dlrxc=dlrxco)
@@ -382,7 +395,7 @@ function propagate(rhoi::Array{Complex{Float64},2}, gspop::Array{Complex{Float64
         end
 
         if input.fxcalpha^2 + input.hartreeu^2 > 1e-9
-            lrcxco, dlrxco = buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1)
+            lrcxco, dlrxco = xc_cache === nothing ? buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1) : xc_cache
             Hxc(focki, densint, gspop, 2*input.nchain1, lrcxco)
         end
 
@@ -401,11 +414,14 @@ function propagate(rho1i::Array{Complex{Float64},2}, rho2i::Array{Complex{Float6
     rion1::Array{Float64,1}, rion2::Array{Float64,1},
     vion1::Array{Float64,1}, vion2::Array{Float64,1},
     fion1::Array{Float64,1}, fion2::Array{Float64,1},
-    boxl::Float64, pottable::Array{Float64,2}, input::Input, ii::Int64)
+    boxl::Float64, pottable::Array{Float64,2}, input::Input, ii::Int64;
+    xc_cache = nothing) # when ehrenfest=0, rion1/rion2 never change, so the caller can pass a
+    # precomputed (lrcxco1, dlrxco1, lrcxco2, dlrxco2, intchm, dintchm) here instead of paying
+    # buildxc/buildintchain's O(size^2) cost on every step
 
     construct_rdep_hamiltonian(fock1i, fock1aob, rion1, boxl, pottable, input, 2*input.nchain1) # Construct H based on position
     construct_rdep_hamiltonian(fock2i, fock2aob, rion2, boxl, pottable, input, 2*input.nchain2) # Construct H based on position
-    intchm, dintchm = buildintchain(rion1, rion2, boxl, input)
+    intchm, dintchm = xc_cache === nothing ? buildintchain(rion1, rion2, boxl, input) : (xc_cache[5], xc_cache[6])
     Hint(fock1i, fock2i, rho1i, rho2i, gspop1, gspop2, 2*input.nchain1, 2*input.nchain2, intchm)
     dint1, dint2 = build_dint(rho1i, rho2i, gspop1, gspop2, dintchm)
 
@@ -443,8 +459,12 @@ function propagate(rho1i::Array{Complex{Float64},2}, rho2i::Array{Complex{Float6
 
 
     if input.fxcalpha^2 + input.hartreeu^2 > 1e-9
-        lrcxco1, dlrxco1 = buildxc(rion1, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1)
-        lrcxco2, dlrxco2 = buildxc(rion2, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain2)
+        if xc_cache === nothing
+            lrcxco1, dlrxco1 = buildxc(rion1, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1)
+            lrcxco2, dlrxco2 = buildxc(rion2, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain2)
+        else
+            lrcxco1, dlrxco1, lrcxco2, dlrxco2 = xc_cache[1], xc_cache[2], xc_cache[3], xc_cache[4]
+        end
         Hxc(fock1i, rho1i, gspop1, 2*input.nchain1, lrcxco1)
         Hxc(fock2i, rho2i, gspop2, 2*input.nchain2, lrcxco2)
         if input.ehrenfest == 1

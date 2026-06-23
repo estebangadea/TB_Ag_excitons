@@ -130,7 +130,13 @@ includes `units.jl`, so all definitions are available after
    - if `ehrenfest = 1`, advances the nuclei one velocity-Verlet step
      (`velverlet`) using forces from `build_fion`/`build_dint`; with
      `ehrenfest = 0` (default) the ions stay frozen at their initial
-     positions and only the electronic dynamics evolves,
+     positions and only the electronic dynamics evolves. In that case the
+     Hartree/fxc interaction matrix (`buildxc`/`buildintchain`) is also
+     position-dependent only through the (now-fixed) ion positions, so
+     `run_td.jl` computes it once before the time loop and passes it into
+     every `propagate` call via the `xc_cache` keyword instead of rebuilding
+     it — by far the dominant per-step cost otherwise — from scratch every
+     step,
    - advances ρ by one step using the scheme selected by `propflag`:
      - `0` ("RC"): a single explicit midpoint (2nd-order Runge-Kutta-like)
        step with the Fock matrix frozen over the step,
@@ -280,10 +286,13 @@ Two implementation notes:
   ground-state value, offset by `+2.0` (so values plot centered around 2
   rather than 0); `vy`,`vz` are unused.
 
-- **`restart.dat`** — comma-delimited dump (via `writedlm`) of the complex
-  AO-basis density matrix followed by the ion position and velocity arrays;
-  for two chains, chain 1's block is followed by chain 2's block in the same
-  layout. Read back with `read_restart`.
+- **`restart.dat`** — binary dump (via `Serialization.serialize`) of the
+  complex AO-basis density matrix followed by the ion position and velocity
+  arrays; for two chains, chain 1's block is followed by chain 2's block in
+  the same layout. Read back with `read_restart`. Binary rather than a
+  comma-delimited text dump because the text format scaled badly: at ~4000
+  sites a single checkpoint took seconds to write and tens of seconds to
+  read back, and produced a ~700MB file for what is ~270MB of actual data.
 
 ## Known issues
 

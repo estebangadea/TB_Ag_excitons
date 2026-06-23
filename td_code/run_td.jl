@@ -123,8 +123,11 @@ write_td_header(input)
 if input.chains == 1 # Single chain system propagation
   focki     = copy(fockaob)
   rhoi      = copy(rhogs)
+  # With ehrenfest=0 the ions never move, so the Hartree/fxc interaction matrix (buildxc) is the
+  # same on every step; precompute it once instead of paying its O(nchain1^2) cost every step.
+  xc_cache  = input.ehrenfest == 0 ? buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1) : nothing
   for ii = 1:input.steps
-    propagate(rhoi, gspop, focki, fockaob, rion, vion, fion, boxl, pottable, input, ii) #time evolve rhoi and focki
+    propagate(rhoi, gspop, focki, fockaob, rion, vion, fion, boxl, pottable, input, ii; xc_cache=xc_cache) #time evolve rhoi and focki
 
     if (ii % input.savefreq) == 0 #save to buffer
       push!(tbuffer, ii*input.tstep)
@@ -153,6 +156,16 @@ if input.chains == 2 # Double chain system propagation
   rho1i     = copy(rho1gs)
   fock2i    = copy(fockaob2)
   rho2i     = copy(rho2gs)
+  # With ehrenfest=0 neither chain's ions move, so buildxc/buildintchain are the same on every
+  # step; precompute them once instead of paying their O(size^2) cost every step.
+  if input.ehrenfest == 0
+    lrcxco1, dlrxco1 = buildxc(rion1, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1)
+    lrcxco2, dlrxco2 = buildxc(rion2, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain2)
+    intchm0, dintchm0 = buildintchain(rion1, rion2, boxl, input)
+    xc_cache = (lrcxco1, dlrxco1, lrcxco2, dlrxco2, intchm0, dintchm0)
+  else
+    xc_cache = nothing
+  end
   for ii = 1:input.steps
     propagate(rho1i, rho2i,
     gspop1, gspop2,
@@ -162,7 +175,7 @@ if input.chains == 2 # Double chain system propagation
     vion1, vion2,
     fion1, fion2,
     boxl, pottable,
-    input, ii) #time evolve rhoi and focki
+    input, ii; xc_cache=xc_cache) #time evolve rhoi and focki
 
     if (ii % input.savefreq) == 0 #save to buffer
       push!(tbuffer, ii*input.tstep)

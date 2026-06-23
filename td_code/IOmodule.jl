@@ -1,4 +1,5 @@
 using Printf
+using Serialization
 
 include("units.jl")
 
@@ -37,7 +38,7 @@ Base.@kwdef mutable struct Input
   tstep::Float64      = 0.005 #timestep in atomic units
   steps::Int64        = 1 #number of steps
   savefreq::Int64     = 100 #frequency of data save
-  bufflen::Int64      = 100 #size of the data buffer
+  bufflen::Int64      = 1000 #size of the data buffer
   restart::Int64      = 0 #0-from scratch, 1-read restart.dat
   propflag::Int64     = 0 #0-RC, 1-RCsc, 2-UnitProp 
 
@@ -281,20 +282,11 @@ end
 
 function write_restart(matrix::Array{ComplexF64,2}, array1::Array{Float64,1}, array2::Array{Float64,1})
   try
-      # Open the file for writing
-      file = open("restart.dat", "w")
-
-      # Write the complex matrix to the file
-      writedlm(file, matrix, ',')
-
-      # Write the first array to the file
-      writedlm(file, array1, ',')
-
-      # Write the second array to the file
-      writedlm(file, array2, ',')
-
-      # Close the file
-      close(file)
+      open("restart.dat", "w") do file
+          serialize(file, matrix)
+          serialize(file, array1)
+          serialize(file, array2)
+      end
 
       println("Restart successfully written to restart.dat")
 
@@ -305,29 +297,14 @@ end
 
 function write_restart(matrix1::Array{ComplexF64,2}, matrix2::Array{ComplexF64,2}, rion1::Array{Float64,1}, rion2::Array{Float64,1}, vion1::Array{Float64,1}, vion2::Array{Float64,1})
   try
-      # Open the file for writing
-      file = open("restart.dat", "w")
-
-      # Write the complex matrix to the file
-      writedlm(file, matrix1, ',')
-
-      # Write the first array to the file
-      writedlm(file, rion1, ',')
-
-      # Write the second array to the file
-      writedlm(file, vion1, ',')
-
-      # Write the complex matrix to the file
-      writedlm(file, matrix2, ',')
-
-      # Write the first array to the file
-      writedlm(file, rion2, ',')
-
-      # Write the second array to the file
-      writedlm(file, vion2, ',')
-
-      # Close the file
-      close(file)
+      open("restart.dat", "w") do file
+          serialize(file, matrix1)
+          serialize(file, rion1)
+          serialize(file, vion1)
+          serialize(file, matrix2)
+          serialize(file, rion2)
+          serialize(file, vion2)
+      end
 
       println("Restart successfully written to restart.dat")
 
@@ -338,20 +315,9 @@ end
 
 function read_restart(filename, sizei)
   try
-      # Read the file and split it into sections
-      data = readdlm(filename, ',')
-
-      # Extract the complex matrix
-      matrix = data[1:sizei,1:sizei]
-      matrix = parse.(ComplexF64, matrix)
-
-      # Extract the first array
-      array1 = data[sizei+1:2*sizei,1]
-      array1 = convert(Array{Float64,1}, array1)
-
-      # Extract the second array
-      array2 = data[2*sizei+1:3*sizei,1]
-      array2 = convert(Array{Float64,1}, array2)
+      matrix, array1, array2 = open(filename, "r") do file
+          (deserialize(file), deserialize(file), deserialize(file))
+      end
 
       return matrix, array1, array2
 
@@ -363,32 +329,10 @@ end
 
 function read_restart(filename, size1, size2)
   try
-      # Read the file and split it into sections
-      data = readdlm(filename, ',')
-
-      # Extract the complex matrix
-      matrix1 = data[1:size1,1:size1]
-      matrix1 = parse.(ComplexF64, matrix1)
-
-      # Extract the first array
-      array1 = data[size1+1:2*size1,1]
-      array1 = convert(Array{Float64,1}, array1)
-
-      # Extract the second array
-      array2 = data[2*size1+1:3*size1,1]
-      array2 = convert(Array{Float64,1}, array2)
-
-      # Extract the second array
-      matrix2 = data[3*size1+1:3*size1+size2,1:size2]
-      matrix2 = parse.(ComplexF64, matrix2)
-
-      # Extract the second array
-      array3 = data[3*size1+size2+1:3*size1+2*size2,1]
-      array3 = convert(Array{Float64,1}, array3)
-
-      # Extract the second array
-      array4 = data[3*size1+2*size2+1:3*size1+3*size2,1]
-      array4 = convert(Array{Float64,1}, array4)
+      matrix1, array1, array2, matrix2, array3, array4 = open(filename, "r") do file
+          (deserialize(file), deserialize(file), deserialize(file),
+           deserialize(file), deserialize(file), deserialize(file))
+      end
 
       return matrix1, matrix2, array1, array3, array2, array4
 

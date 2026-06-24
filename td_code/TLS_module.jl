@@ -164,6 +164,16 @@ function Hxc(Hcd::SparseMatrixCSC{Complex{Float64}}, Rho::Array{Complex{Float64}
     end
 end
 
+function Honsite(Hcd::SparseMatrixCSC{Complex{Float64}}, Rho::Array{Complex{Float64},2}, q0::Array{Complex{Float64},1}, size::Int64, U::Float64)
+    # Pure on-site (Hubbard-like) feedback: U*(rho_jj - q0_jj), no coupling to other sites at
+    # all -- unlike Hxc's hartreeu, which has a 1/U spatial softening radius and so still
+    # couples to neighbors. This term has no dependence on ion positions, so it contributes
+    # exactly zero to the Hellmann-Feynman ionic force (no change needed in build_fion).
+    for jj in 1:size
+        Hcd[jj,jj] = Hcd[jj,jj] + U*(Rho[jj,jj]-q0[jj])
+    end
+end
+
 function Hint(Hcd1::SparseMatrixCSC{Complex{Float64}}, Hcd2::SparseMatrixCSC{Complex{Float64}}, Rho1::Array{Complex{Float64},2}, Rho2::Array{Complex{Float64},2}, q01::Array{Complex{Float64},1}, q02::Array{Complex{Float64},1}, size1::Int64, size2::Int64, intch::Array{Float64,2})
     
     dq1 = (diag(Rho2) .- q02)' * intch'
@@ -354,10 +364,16 @@ function propagate(rhoi::Array{Complex{Float64},2}, gspop::Array{Complex{Float64
     if input.fxcalpha^2 + input.hartreeu^2 > 1e-9
         lrcxco, dlrxco = xc_cache === nothing ? buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1) : xc_cache
         Hxc(focki, rhoi, gspop, 2*input.nchain1, lrcxco)
+        if input.hubbardu^2 > 1e-9
+            Honsite(focki, rhoi, gspop, 2*input.nchain1, input.hubbardu)
+        end
         if input.ehrenfest == 1
             velverlet(rion, fion, vion, input, boxl, pottable, rhoi, dlrxc=dlrxco)
         end
     else
+        if input.hubbardu^2 > 1e-9
+            Honsite(focki, rhoi, gspop, 2*input.nchain1, input.hubbardu)
+        end
         if input.ehrenfest == 1
             velverlet(rion, fion, vion, input, boxl, pottable, rhoi)
         end
@@ -397,6 +413,9 @@ function propagate(rhoi::Array{Complex{Float64},2}, gspop::Array{Complex{Float64
         if input.fxcalpha^2 + input.hartreeu^2 > 1e-9
             lrcxco, dlrxco = xc_cache === nothing ? buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1) : xc_cache
             Hxc(focki, densint, gspop, 2*input.nchain1, lrcxco)
+        end
+        if input.hubbardu^2 > 1e-9
+            Honsite(focki, densint, gspop, 2*input.nchain1, input.hubbardu)
         end
 
         if input.propflag == 1
@@ -467,11 +486,19 @@ function propagate(rho1i::Array{Complex{Float64},2}, rho2i::Array{Complex{Float6
         end
         Hxc(fock1i, rho1i, gspop1, 2*input.nchain1, lrcxco1)
         Hxc(fock2i, rho2i, gspop2, 2*input.nchain2, lrcxco2)
+        if input.hubbardu^2 > 1e-9
+            Honsite(fock1i, rho1i, gspop1, 2*input.nchain1, input.hubbardu)
+            Honsite(fock2i, rho2i, gspop2, 2*input.nchain2, input.hubbardu)
+        end
         if input.ehrenfest == 1
             velverlet(rion1, fion1, vion1, input, boxl, pottable, rho1i, dlrxc=dlrxco1, dint = dint1)
             velverlet(rion2, fion2, vion2, input, boxl, pottable, rho2i, dlrxc=dlrxco2, dint = dint2)
         end
     else
+        if input.hubbardu^2 > 1e-9
+            Honsite(fock1i, rho1i, gspop1, 2*input.nchain1, input.hubbardu)
+            Honsite(fock2i, rho2i, gspop2, 2*input.nchain2, input.hubbardu)
+        end
         if input.ehrenfest == 1
             velverlet(rion1, fion1, vion1, input, boxl, pottable, rho1i, dint = dint1)
             velverlet(rion2, fion2, vion2, input, boxl, pottable, rho2i, dint = dint2)
@@ -525,6 +552,10 @@ function propagate(rho1i::Array{Complex{Float64},2}, rho2i::Array{Complex{Float6
         if input.fxcalpha^2 + input.hartreeu^2 > 1e-9
             Hxc(fock1i, densint1, gspop1, 2*input.nchain1, lrcxco1)
             Hxc(fock2i, densint2, gspop2, 2*input.nchain2, lrcxco2)
+        end
+        if input.hubbardu^2 > 1e-9
+            Honsite(fock1i, densint1, gspop1, 2*input.nchain1, input.hubbardu)
+            Honsite(fock2i, densint2, gspop2, 2*input.nchain2, input.hubbardu)
         end
 
         if input.propflag == 1
@@ -636,5 +667,118 @@ function minimize_dimer(nchain::Int64, r1_0::Float64, r2_0::Float64, latcell::Fl
     end
 
     return r1, r2, converged, iters, force
+end
+
+# Diagonalize a (Hermitian-valued) Fock matrix and refill the lowest half of the bands
+# (closed shell, half filling), same fill rule as construct_gs_dens/dimer_energy_force:
+# the two states straddling the Fermi level get occupation 1 each instead of 2/0 if they
+# are degenerate (gap < 1e-8), e.g. an undimerized or not-yet-symmetry-broken trial.
+function density_from_fock(fock::AbstractMatrix{ComplexF64})
+    nsize = size(fock, 1)
+    levels, solv = eigen(collect(fock))
+    isolv = inv(solv)
+    gap = abs(levels[Int(nsize/2)+1] - levels[Int(nsize/2)])
+    rho = construct_gs_dens(solv, isolv, gap < 1e-8 ? 0.0 : 1.0)
+    return rho, levels
+end
+
+# Self-consistent mean-field ground state for a single chain under its own Hxc kernel.
+# The bare/decoupled chain's ground state (construct_gs_dens on fockaob alone) is only
+# guaranteed to be a stationary point of the *interacting* Fock operator when the
+# interaction is weak; this iterates the interacting problem to convergence instead of
+# assuming that. A small random on-site potential is added to the Fock matrix's diagonal
+# for the first `scfnoiseiter` iterations to break the exact symmetry that would otherwise
+# pin the iteration exactly at an unstable saddle (same role as minimize_dimer's
+# off-center nudge) -- removed afterwards so it doesn't bias the converged answer.
+function scf_ground_state(fockaob::SparseMatrixCSC{Complex{Float64}}, rho_0::Array{Complex{Float64},2},
+    gspop::Array{Complex{Float64},1}, lrcxco::Array{Complex{Float64},2}, input::Input)
+
+    nsize = size(fockaob, 1)
+    rho = copy(rho_0)
+    converged = false
+    resid = Inf
+    it = 0
+
+    for iter = 1:input.scfiter
+        it = iter
+        fockt = copy(fockaob)
+        if iter <= input.scfnoiseiter
+            for jj = 1:nsize
+                fockt[jj,jj] += input.scfnoise * (rand() - 0.5)
+            end
+        end
+
+        Hxc(fockt, rho, gspop, nsize, lrcxco)
+        if input.hubbardu^2 > 1e-9
+            Honsite(fockt, rho, gspop, nsize, input.hubbardu)
+        end
+        rhon, _ = density_from_fock(fockt)
+        resid = maximum(abs.(diag(rhon) .- diag(rho)))
+        rho .= (1 - input.scfmix) .* rho .+ input.scfmix .* rhon
+
+        if iter > input.scfnoiseiter && resid < input.scftol
+            converged = true
+            break
+        end
+    end
+
+    return rho, converged, it, resid
+end
+
+# Self-consistent mean-field ground state for two chains coupled by the interchain
+# Coulomb term (Hint), in addition to each chain's own Hxc kernel. Hint is always active
+# in two-chain mode regardless of fxcalpha/hartreeu, so this matters even with the
+# Hartree/fxc kernels switched off. Same symmetry-breaking noise/mixing strategy as the
+# single-chain overload above, applied jointly to both chains each iteration since they
+# are coupled (not solved independently).
+function scf_ground_state(fockaob1::SparseMatrixCSC{Complex{Float64}}, fockaob2::SparseMatrixCSC{Complex{Float64}},
+    rho1_0::Array{Complex{Float64},2}, rho2_0::Array{Complex{Float64},2},
+    gspop1::Array{Complex{Float64},1}, gspop2::Array{Complex{Float64},1},
+    lrcxco1::Array{Complex{Float64},2}, lrcxco2::Array{Complex{Float64},2}, intchm::Array{Float64,2},
+    input::Input)
+
+    size1 = size(fockaob1, 1)
+    size2 = size(fockaob2, 1)
+    rho1 = copy(rho1_0)
+    rho2 = copy(rho2_0)
+    converged = false
+    resid = Inf
+    it = 0
+
+    for iter = 1:input.scfiter
+        it = iter
+        fock1t = copy(fockaob1)
+        fock2t = copy(fockaob2)
+        if iter <= input.scfnoiseiter
+            for jj = 1:size1
+                fock1t[jj,jj] += input.scfnoise * (rand() - 0.5)
+            end
+            for jj = 1:size2
+                fock2t[jj,jj] += input.scfnoise * (rand() - 0.5)
+            end
+        end
+
+        Hxc(fock1t, rho1, gspop1, size1, lrcxco1)
+        Hxc(fock2t, rho2, gspop2, size2, lrcxco2)
+        Hint(fock1t, fock2t, rho1, rho2, gspop1, gspop2, size1, size2, intchm)
+        if input.hubbardu^2 > 1e-9
+            Honsite(fock1t, rho1, gspop1, size1, input.hubbardu)
+            Honsite(fock2t, rho2, gspop2, size2, input.hubbardu)
+        end
+
+        rho1n, _ = density_from_fock(fock1t)
+        rho2n, _ = density_from_fock(fock2t)
+        resid = max(maximum(abs.(diag(rho1n) .- diag(rho1))), maximum(abs.(diag(rho2n) .- diag(rho2))))
+
+        rho1 .= (1 - input.scfmix) .* rho1 .+ input.scfmix .* rho1n
+        rho2 .= (1 - input.scfmix) .* rho2 .+ input.scfmix .* rho2n
+
+        if iter > input.scfnoiseiter && resid < input.scftol
+            converged = true
+            break
+        end
+    end
+
+    return rho1, rho2, converged, it, resid
 end
 

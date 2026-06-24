@@ -46,6 +46,13 @@ if input.chains == 1 # Single chain system definition
 
   write_eigen(levels)
 
+  if input.scfgs == 1 && input.restart == 0 # relax rho self-consistently under its own Hxc kernel
+    lrcxco0, _ = buildxc(rion, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1)
+    rhogs, scfconv, scfiters, scfresid = scf_ground_state(fockaob, rhogs, gspop, lrcxco0, input)
+    println("SCF ground state: ", scfconv ? "converged" : "did NOT converge", " after $scfiters iterations (residual = $scfresid)")
+    write_scfgs(scfconv, scfiters, scfresid)
+  end
+
 elseif  input.chains == 2 # Double chain system definition
   pottable          = construct_potential(input)
   r1init1            = input.lattice * (1 - input.dimer1) / 2
@@ -98,6 +105,15 @@ elseif  input.chains == 2 # Double chain system definition
   fion1             = zeros(Float64, 2*input.nchain1)
   fion2             = zeros(Float64, 2*input.nchain2)
   boxl              = input.nchain1 * input.lattice
+
+  if input.scfgs == 1 && input.restart == 0 # relax rho1/rho2 self-consistently under Hxc + the (always-on) interchain Hint coupling
+    lrcxco10, _ = buildxc(rion1, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain1)
+    lrcxco20, _ = buildxc(rion2, boxl, input.fxcalpha, input.fxcgamma, input.hartreeu, 2*input.nchain2)
+    intchm0, _ = buildintchain(rion1, rion2, boxl, input)
+    rho1gs, rho2gs, scfconv, scfiters, scfresid = scf_ground_state(fockaob1, fockaob2, rho1gs, rho2gs, gspop1, gspop2, lrcxco10, lrcxco20, intchm0, input)
+    println("SCF ground state: ", scfconv ? "converged" : "did NOT converge", " after $scfiters iterations (residual = $scfresid)")
+    write_scfgs(scfconv, scfiters, scfresid)
+  end
 
 end
 

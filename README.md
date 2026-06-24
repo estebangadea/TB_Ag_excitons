@@ -62,6 +62,20 @@ Given an input file, the code:
   makes the on-site/self-charge contribution vanish exactly, leaving only the
   two terms' differently-shaped long-range tails. Turned on whenever
   `hartreeu` and/or `fxcalpha` is non-zero.
+  - **Hubbard (optional, `hubbardu`)**: a third, *independent* term,
+    `Honsite`, adding `hubbardu*(ρ_jj - q0_jj)` to site `jj`'s diagonal with
+    **no coupling to any other site at all** — unlike `hartreeu`, which still
+    has a `1/U` spatial softening radius and so couples to neighbors even at
+    large `U`. This matters because the mean-field model is prone to a real
+    (non-numerical) collapse instability once `fxcalpha`/`hartreeu`/the
+    interchain coupling exceed a critical strength relative to distance (see
+    **Self-consistent ground state** below): the spatially-extended
+    `hartreeu` kernel preferentially damps long-wavelength collapse modes but
+    can leave other, more local modes under-damped, whereas a purely on-site
+    term damps every mode equally and was confirmed (empirically, by
+    checking real-time stability from machine-precision noise with no
+    applied field) to produce a genuinely stable moderate-coupling ground
+    state where `hartreeu` alone could not. Default `0` (off).
 - **Nuclear dynamics (optional, Ehrenfest).** Ions move under velocity
   Verlet using forces derived from the bond-order matrix (off-diagonal ρ),
   the repulsive potential, and (if active) the electron-electron and
@@ -119,6 +133,10 @@ includes `units.jl`, so all definitions are available after
      `restart.dat`.
    - In two-chain mode this is done twice (chain 1 and chain 2), with chain
      2's geometry rescaled by `nchain1/nchain2` so both rings share `boxl`.
+   - If `scfgs = 1` (and `restart = 0`), `scf_ground_state` then relaxes this
+     density self-consistently under the chain(s)' own Hxc kernel (and, in
+     two-chain mode, the interchain `Hint` term) before propagation starts —
+     see **Self-consistent ground state** below.
 3. **Propagate.** For each of `steps = floor(time/tstep)` steps,
    `propagate(...)` ([TLS_module.jl:487](td_code/TLS_module.jl#L487) for one
    chain, [:562](td_code/TLS_module.jl#L562) for two):
@@ -211,6 +229,7 @@ units, unlike everything else.
 | `dimer2` | dimerization of chain 2 | fraction | 0 |
 | `rchain` | perpendicular distance between the two chains | Å | 10 |
 | `hartreeu` | Hartree term strength (`U`); also its on-site/chemical-hardness value | eV | 0.115 |
+| `hubbardu` | strength of a purely on-site (no spatial extent) Hubbard-like repulsion, independent of `hartreeu` | eV | 0 |
 | `fxcalpha` | fxc kernel strength (input convention: negative of the kernel's physical strength) | eV | -0.00735 |
 | `fxcgamma` | softening radius of the fxc kernel | Å | 0.492 |
 | `p` | exponent of the repulsive potential | – | 15 |
@@ -223,6 +242,12 @@ units, unlike everything else.
 | `mingeomtol` | convergence threshold on the residual dimerizing force (per cell) | eV/Å | 1e-5 |
 | `mingeomstep` | initial steepest-descent step size, refined every iteration by backtracking line search | **a.u.** | 50.0 |
 | `mingeomiter` | maximum number of steepest-descent iterations | – | 2000 |
+| `scfgs` | `0` = use the bare/decoupled chain ground state as the dynamics' starting point, `1` = relax it self-consistently under Hxc/Hint before propagation (ignored if `restart=1`) — see **Self-consistent ground state** | – | 0 |
+| `scfmix` | linear mixing fraction for the SCF density update (0-1; lower if it fails to converge at strong coupling) | – | 0.3 |
+| `scftol` | convergence threshold on the max per-site population change between SCF iterations | – | 1e-7 |
+| `scfiter` | maximum number of SCF iterations | – | 500 |
+| `scfnoise` | amplitude of the random on-site symmetry-breaking potential applied for the first `scfnoiseiter` iterations | eV | 1e-3 |
+| `scfnoiseiter` | number of initial SCF iterations over which the symmetry-breaking noise is applied | – | 5 |
 | `time` | total propagation time | fs | 0.005 |
 | `tstep` | integration time step | fs | 0.005 |
 | `savefreq` | save a data point/trajectory frame every N steps | steps | 100 |
@@ -267,6 +292,64 @@ Two implementation notes:
   ring has no preferred handedness, the optimized `dimer1`'s **sign** is then
   arbitrary (both signs are equally valid, degenerate ground states); only
   its magnitude is physically meaningful.
+
+## Self-consistent ground state (`scfgs`)
+
+By default the dynamics starts from the ground state of each chain's *bare*,
+isolated, non-interacting Hamiltonian — the Hxc/Hint mean-field terms are
+only switched on once propagation begins. This is fine when the interaction
+is weak (the bare state is a good approximation to the true interacting
+ground state, and propagating from it just produces small RPA-like
+oscillations — the expected excitonic response). But above a critical
+coupling strength (set by `fxcalpha`/`hartreeu` and, in two-chain mode, by
+`1/rchain` through the always-on `Hint` term), the bare state stops being
+even a local minimum of the true self-consistent mean-field energy — it
+becomes an unstable saddle point, and propagating from it diverges to NaN in
+finite time. This is a real instability of the underlying equations, not a
+numerical-integration artifact: it happens with the exact unitary propagator
+just as with the explicit ones, persists with no applied field at all (pure
+floating-point round-off is enough to seed an exponential, textbook-clean
+e^(Γt) growth), and the growth rate is essentially independent of `tstep`.
+
+Setting `scfgs = 1` relaxes the actual self-consistent (interacting) ground
+state before propagation: `scf_ground_state` ([TLS_module.jl](td_code/TLS_module.jl))
+iterates "build the interacting Fock matrix from the current trial
+densities → diagonalize → refill the lowest half-band → linearly mix with
+the previous trial" to convergence, overwriting the chains' starting density
+with the result (`gspop`, the *reference* density used inside Hxc/Hint's
+charge-fluctuation kernel, is left untouched — only the propagated starting
+state changes). A small random on-site potential is injected for the first
+`scfnoiseiter` iterations to break the exact symmetry that would otherwise
+pin the iteration at the unstable saddle (the bare state itself), the same
+role as `mingeom`'s off-center nudge.
+
+Three things worth knowing if you hit this:
+- Above threshold, the self-consistent solution the SCF actually finds can
+  be a **full charge-domain collapse** (site populations saturating at the
+  model's hard `[0,2]` bound, splitting each chain into two macroscopic
+  domains) rather than a moderate, exciton-like state — this genuinely is a
+  stable fixed point (propagates cleanly), just not a useful one. Whether a
+  moderate minimum exists at all depends on the stabilizing terms below.
+- `hartreeu` alone is not a reliable fix for the collapse, even though it is
+  nominally a repulsive/stabilizing term: because its kernel has a `1/U`
+  spatial extent (so it still couples to neighboring sites even at large
+  `U`), increasing it can simply move the SCF to a *different* unstable
+  stationary point rather than a genuinely stable one — confirmed by
+  checking real-time stability with no applied field, not just static SCF
+  self-consistency (which only guarantees a stationary point, not a stable
+  one).
+- A purely on-site `hubbardu` term (see **Electron-electron interaction**
+  above) was confirmed to genuinely stabilize a moderate ground state once
+  strong enough (order a few eV in the cases tested), including at the
+  shortest interchain distances tested. There is a real critical threshold
+  below which it still fails, consistent with genuine stabilization rather
+  than masking the issue.
+- The instability threshold (in terms of physical `fxcalpha`/`rchain`) was
+  checked to be essentially chain-length-independent over an 8x range in
+  `nchain` (confirmed both empirically and via the leading eigenvalue of the
+  linearized self-consistency map) — it is governed by the kernel's
+  near-field behavior, not by how the long-range tail is summed over the
+  ring.
 
 ## Output files
 

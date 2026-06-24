@@ -16,6 +16,7 @@ Base.@kwdef mutable struct Input
   dimer2::Float64     = 0.0 #dimerization of chain2
   rchain::Float64     = 10 #intechain distance
   hartreeu::Float64   = 0.1152918 #strength of the Hartree term (U); on-site value and 1/U decay-softening radius, K=1 implicit
+  hubbardu::Float64   = 0.0 #strength of a purely on-site (Hubbard-like) repulsion U*(rho_jj-q0_jj), no spatial extent at all (unlike hartreeu)
   fxcalpha::Float64   = -0.0073498645 #strenght of the fxc interaction
   fxcgamma::Float64   = 0.4922388 #radius for long-range correction
   p::Int64            =  15     #exponent of repulsion potential
@@ -32,6 +33,14 @@ Base.@kwdef mutable struct Input
   mingeomtol::Float64  = 1e-5*ELECTRONVOLT/ANGSTROM #convergence threshold on the residual dimerizing force (per cell)
   mingeomstep::Float64 = 50.0 #initial steepest-descent step size (a.u.), refined every iteration by backtracking line search
   mingeomiter::Int64   = 2000 #maximum number of steepest-descent iterations
+
+  # SELF-CONSISTENT GROUND STATE (electronic mean field)
+  scfgs::Int64         = 0 #0-skip (use the bare/decoupled chain ground state as before), 1-relax rho self-consistently under Hxc/Hint before propagation (ignored if restart=1)
+  scfmix::Float64      = 0.3 #linear mixing fraction for the SCF density update (0-1)
+  scftol::Float64      = 1e-7 #convergence threshold on the max per-site population change between SCF iterations
+  scfiter::Int64       = 500 #maximum number of SCF iterations
+  scfnoise::Float64    = 1e-3*ELECTRONVOLT #amplitude of the random on-site symmetry-breaking potential applied for the first scfnoiseiter iterations
+  scfnoiseiter::Int64  = 5 #number of initial SCF iterations over which the symmetry-breaking noise is applied
 
   # TIME PROPAGATION
   time::Float64       = 0.005 #total time in atomic units
@@ -88,6 +97,8 @@ function read_input_file(filename)
                 input.rchain = parse(Float64, value) * ANGSTROM
             elseif key == "hartreeu"
                 input.hartreeu = parse(Float64, value) * ELECTRONVOLT
+            elseif key == "hubbardu"
+                input.hubbardu = parse(Float64, value) * ELECTRONVOLT
             elseif key == "fxcalpha"
                 input.fxcalpha = parse(Float64, value) * ELECTRONVOLT
             elseif key == "fxcgamma"
@@ -112,6 +123,18 @@ function read_input_file(filename)
                 input.mingeomstep = parse(Float64, value)
             elseif key == "mingeomiter"
                 input.mingeomiter = parse(Int64, value)
+            elseif key == "scfgs"
+                input.scfgs = parse(Int64, value)
+            elseif key == "scfmix"
+                input.scfmix = parse(Float64, value)
+            elseif key == "scftol"
+                input.scftol = parse(Float64, value)
+            elseif key == "scfiter"
+                input.scfiter = parse(Int64, value)
+            elseif key == "scfnoise"
+                input.scfnoise = parse(Float64, value) * ELECTRONVOLT
+            elseif key == "scfnoiseiter"
+                input.scfnoiseiter = parse(Int64, value)
             elseif key == "time"
                 input.time = parse(Float64, value) * FEMTOSECOND
             elseif key == "tstep"
@@ -161,6 +184,7 @@ function write_header(input::Input)
     write(io, @sprintf("eq distance        = %.6f AA\n", input.req/ANGSTROM))
 
     write(io, @sprintf("hartree U            = %.6f eV\n", input.hartreeu/ELECTRONVOLT))
+    write(io, @sprintf("hubbard U (on-site)  = %.6f eV\n", input.hubbardu/ELECTRONVOLT))
     write(io, @sprintf("fxc alpha            = %.6f eV\n", input.fxcalpha/ELECTRONVOLT))
     write(io, @sprintf("fxc gamma            = %.6f AA\n\n", input.fxcgamma/ANGSTROM))
 
@@ -198,6 +222,14 @@ function write_mingeom(label::String, converged::Bool, iters::Int64, dimer::Floa
       label, converged ? "converged" : "did NOT converge", iters))
     write(io, @sprintf("  optimized dimerization = %.6f, residual force = %.6e eV/AA\n\n",
       dimer, force/ELECTRONVOLT*ANGSTROM))
+  end
+end
+
+function write_scfgs(converged::Bool, iters::Int64, resid::Float64)
+  open("output.out", "a") do io
+    write(io, @sprintf("Self-consistent ground state: %s after %d iterations\n",
+      converged ? "converged" : "did NOT converge", iters))
+    write(io, @sprintf("  residual (max |Delta population|) = %.6e\n\n", resid))
   end
 end
 

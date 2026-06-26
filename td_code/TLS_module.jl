@@ -108,15 +108,19 @@ function VPgaus(stop::Float64, height::Float64, stepi::Int64, timestep::Float64)
 end
 
 function VPlaser(stop::Float64, height::Float64, freq::Float64, stepi::Int64, timestep::Float64)
+    # Vector potential whose time derivative is the laser field
+    # E(t) = height * sin(pi*ti/stop)^2 * sin(freq*(ti - stop/2)),
+    # i.e. a cos^2-envelope pulse of duration `stop` with a carrier of frequency `freq`,
+    # centered so E is antisymmetric about stop/2 (hence A(0) = A(stop) = 0 exactly).
     ti = stepi*timestep
     if ti < stop
         k1 = -2 / freq * cos(stop * freq / -2 + freq * ti)
         k2 = stop / (-2 * pi + stop * freq) * cos(stop * freq / -2 - 2 * pi * ti / stop + freq * ti)
         k3 = stop / (2 * pi + stop * freq) * cos(stop * freq / -2 + 2 * pi * ti / stop + freq * ti)
-        k4 = 4 * pi^2 * cos(stop * freq / 2) / (stop^2 * freq^3 - 4 * pi^2 * freq) 
-        A = height * (0.5 * (k1 + k2 + k3) - k4)  +  ti * 0.0005
+        k4 = 4 * pi^2 * cos(stop * freq / 2) / (stop^2 * freq^3 - 4 * pi^2 * freq)
+        A = height / 2 * (0.5 * (k1 + k2 + k3) - k4)
     else
-        A = ti * 0.0005   #0.0
+        A = 0.0
     end
     return A
 end
